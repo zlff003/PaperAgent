@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "paperagent": {
+      "command": "C:\\ProgramData\\anaconda3\\python.exe",
+      "args": [
+        "d:\\Projects\\Agent\\PaperAgent\\backend\\run_mcp_server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "d:\\Projects\\Agent\\PaperAgent\\backend",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

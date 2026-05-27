@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONPATH=. python -m pytest tests/ -v)",
+      "Bash(pip install:*)",
+      "Bash(PYTHONPATH=\".\" python -c \"from app.mcp.server.server import mcp; print\\('Server:', mcp.name\\); print\\('Tools:', [t.name for t in mcp._tool_manager.list_tools\\(\\) if hasattr\\(mcp, '_tool_manager'\\)]\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(pip list:*)"
+    ]
+  }
+}

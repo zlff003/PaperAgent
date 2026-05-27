@@ -1,0 +1,18 @@
+# 开发模式：仅启动基础设施服务（Chroma），前后端在本地运行，支持热重载。
+#
+# 使用方式：
+#   1. docker compose -f docker-compose-dev.yml up -d   # 启动 Chroma
+#   2. cd backend && uvicorn app.main:app --reload      # 启动后端（热重载）
+#      （.env 文件中的路径变量会被自动加载，无需手动设置 $env）
+#   3. cd frontend && npm run dev                       # 启动前端（HMR）
+#
+# 调试完成后只需 Ctrl+C 停止前后端进程，Chroma 容器保持运行。
+# 如需停止 Chroma：docker compose -f docker-compose-dev.yml down
+
+services:
+  chroma:
+    image: chromadb/chroma:0.5.23
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./data/chroma:/chroma/chroma
