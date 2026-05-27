@@ -229,7 +229,9 @@ export function ChatPage() {
               )}
             </article>
           ))}
-          {busy && <div className="message assistant">思考中...</div>}
+          {busy && messages[messages.length - 1]?.role === "assistant" && !messages[messages.length - 1]?.content && (
+            <div className="message assistant">思考中...</div>
+          )}
         </div>
         <form className="chat-input" onSubmit={submit}>
           <input
