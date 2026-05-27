@@ -140,8 +140,11 @@ async def _generate_answer(state: QAState) -> dict[str, Any]:
     )
 
     try:
-        response = await chat.ainvoke(prompt)
-        return {"draft_answer": response.content, "error": ""}
+        full_response = ""
+        async for chunk in chat.astream(prompt):
+            if chunk.content:
+                full_response += chunk.content
+        return {"draft_answer": full_response, "error": ""}
     except Exception as exc:
         return {"draft_answer": "", "error": str(exc)}
 
@@ -252,6 +255,7 @@ async def _format_save(state: QAState) -> dict[str, Any]:
     return {
         "final_answer": final,
         "conversation_id": conversation_id,
+        "retrieved_papers": papers,
     }
 
 # ── Routing functions ──────────────────────────────────────────────
@@ -267,6 +271,9 @@ def _route_after_classify(state: QAState) -> Literal["simple_retrieve", "decompo
 def _route_after_critique(state: QAState) -> Literal["format_save", "reformulate"]:
     iteration = state.get("iteration", 0)
     max_iter = state.get("max_iterations", 2)
+    # Skip reflection for simple questions — one-shot generate is sufficient
+    if state.get("question_type", "simple") == "simple":
+        return "format_save"
     if state.get("critique_passed", True) or iteration >= max_iter:
         return "format_save"
     return "reformulate"

@@ -78,12 +78,15 @@ class ResearchQAAgent:
         async for event in qa_graph.astream_events(initial, version="v2"):
             kind = event.get("event", "")
             name = event.get("name", "")
+            metadata = event.get("metadata", {})
 
-            if kind == "on_chat_model_stream" and name == "generate_answer":
-                # Token-level streaming from the generate node
-                chunk = event.get("data", {}).get("chunk", None)
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    yield {"event": "token", "data": chunk.content}
+            if kind == "on_chat_model_stream":
+                # Only stream tokens from the generate_answer node
+                node = metadata.get("langgraph_node", "")
+                if node == "generate_answer":
+                    chunk = event.get("data", {}).get("chunk", None)
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        yield {"event": "token", "data": chunk.content}
 
             elif kind == "on_chain_end" and name in (
                 "classify_question", "simple_retrieve", "decompose",

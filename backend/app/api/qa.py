@@ -18,29 +18,38 @@ def ask(payload: QARequest) -> QAResponse:
 @router.post("/ask/stream")
 async def ask_stream(payload: QARequest):
     async def event_generator():
+        final_answer = ""
+        cited_papers = []
         try:
             async for ev in research_qa_agent.answer_stream(payload.question, payload.top_k):
                 kind = ev.get("event")
                 if kind == "token":
-                    # token content is plain text
                     data = ev.get("data", "")
                     yield f"event: token\ndata: {data}\n\n"
                 elif kind == "node_done":
                     import json
-                    yield f"event: node_done\ndata: {json.dumps(ev)}\n\n"
+                    node_data = ev.get("data", {})
+                    # Capture final answer info as it passes through
+                    if node_data.get("final_answer"):
+                        final_answer = node_data["final_answer"]
+                    if node_data.get("retrieved_papers"):
+                        cited_papers = node_data["retrieved_papers"]
+                    # Don't send intermediate node completions to frontend;
+                    # only token events and the final answer matter for UX
         except Exception as e:
-            # send error event then stop
             yield f"event: error\ndata: {str(e)}\n\n"
         finally:
-            # Ensure final saved conversation is available: call synchronous answer
-            try:
-                final = research_qa_agent.answer(payload.question, payload.top_k)
-                import json
-                node = {"event": "node_done", "node": "format_save", "data": {"final_answer": final.answer, "cited_papers": [p.__dict__ for p in final.cited_papers]}}
-                yield f"event: node_done\ndata: {json.dumps(node)}\n\n"
-            except Exception:
-                # ignore
-                pass
+            import json
+            # Emit a final summary event so the frontend always gets answer + citations
+            final = {
+                "event": "node_done",
+                "node": "format_save",
+                "data": {
+                    "final_answer": final_answer,
+                    "cited_papers": [p.model_dump() if hasattr(p, 'model_dump') else p for p in cited_papers],
+                },
+            }
+            yield f"event: node_done\ndata: {json.dumps(final)}\n\n"
             yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
