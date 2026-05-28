@@ -10,7 +10,24 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from app.agents.paper_retrieval import paper_retrieval_agent
+from app.core.langchain_factory import get_chat_model
 from app.supervisor.state import SupervisorState
+
+
+QUERY_REWRITE_PROMPT = """Given the conversation history, rewrite the user's latest question
+into a standalone, keyword-rich search query for a research paper database.
+
+Rules:
+- Resolve pronouns and references (e.g., "the first one", "that paper", "his method")
+  into specific terms from the conversation
+- Preserve the original search intent and technical terms
+- Output ONLY the rewritten query on a single line, no explanation
+
+Conversation:
+{context}
+
+Original: {question}
+Rewritten:"""
 
 
 async def retrieval_node(state: SupervisorState) -> dict[str, Any]:
@@ -29,7 +46,10 @@ async def retrieval_node(state: SupervisorState) -> dict[str, Any]:
     if not query:
         return _no_query(state)
 
-    papers = await paper_retrieval_agent.search_async(query=query, top_k=6)
+    # Rewrite query with conversation context for better retrieval
+    search_query = await _rewrite_query(messages, query)
+
+    papers = await paper_retrieval_agent.search_async(query=search_query, top_k=6)
 
     if not papers:
         return {
@@ -68,6 +88,29 @@ def _no_query(state: SupervisorState) -> dict[str, Any]:
         "messages": [AIMessage(content="No query found.")],
         "agent_history": _append_history(state, "retrieval"),
     }
+
+
+async def _rewrite_query(messages: list, question: str) -> str:
+    """Rewrite a user query using conversation context for better retrieval."""
+    # Build a brief context summary from recent non-system messages
+    context_lines = []
+    for msg in messages[-10:]:  # last 10 messages max
+        if hasattr(msg, "content") and msg.content:
+            role = "User" if hasattr(msg, "type") and msg.type == "human" else "Assistant"
+            content = msg.content[:300]
+            context_lines.append(f"{role}: {content}")
+    context = "\n".join(context_lines) if context_lines else "(no prior context)"
+
+    prompt = QUERY_REWRITE_PROMPT.format(context=context, question=question)
+
+    try:
+        chat = get_chat_model()
+        response = await chat.ainvoke(prompt)
+        rewritten = response.content.strip() if hasattr(response, "content") else question
+        # Safety: if the LLM returned garbage, fall back to original
+        return rewritten if rewritten and len(rewritten) >= 3 else question
+    except Exception:
+        return question  # fallback: keep original query
 
 
 def _append_history(state: SupervisorState, agent: str) -> list[str]:

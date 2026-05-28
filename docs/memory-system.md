@@ -308,7 +308,48 @@ if not payload.session_id:
 
 ---
 
-## 五、相关文件索引
+## 五、设计决策：为何长期记忆不用 ChromaDB
+
+长期记忆选择了 **SQLite** 而非 ChromaDB 向量数据库，这是基于操作模式和数据访问特征的审慎决策。
+
+### 5.1 核心原则：根据查询模式选择存储
+
+长期记忆涉及的操作及其查询特征：
+
+| 操作 | 查询方式 | 代码位置 |
+|------|---------|---------|
+| 会话恢复 | `WHERE session_id = ? ORDER BY turn_index DESC LIMIT 20` | `chat.py:70` |
+| 跨会话注入 | `ORDER BY created_at DESC LIMIT 5` | `chat.py:97` |
+| 历史列表 | 按 session 过滤或全局去重 | `chat.py:31-32` |
+| 删除 | 按 id 或 session_id 精确删除 | `chat.py:38-46` |
+
+以上全部是**精确匹配 + 时序排序 + 分页**操作，属于关系型数据库的原生优势领域。ChromaDB 是向量数据库，核心能力是语义相似度搜索，与上述操作模式不匹配。
+
+### 5.2 ChromaDB 在此场景的具体劣势
+
+**查询模式不匹配**：ChromaDB 的查询围绕向量距离展开，排序依据是相似度（cosine/euclidean distance），而不是时间戳。会话恢复需要的 "最近 20 轮" 和跨会话注入需要的 "最近 5 条" 都是时间排序，在 ChromaDB 中只能通过 metadata filter 笨重地实现。
+
+**增量写入开销大**：每轮对话保存时，若使用 ChromaDB 需要额外调用 embedding API 将 Q&A 文本向量化，增加 API 延迟和费用（百炼 embedding 按量计费）。而 SQLite 只需一行 INSERT，零网络开销。
+
+**删除操作笨重**：ChromaDB 的 collection 删除依赖 metadata filter，无法像 SQLite 的 `DELETE FROM conversations WHERE session_id = ?` 那样一条语句完成。需要先按 metadata 查出 id 集合，再逐个删除。
+
+**语义搜索在此场景价值有限**：长期记忆中唯一的"召回"类操作是跨会话注入（获取最近 5 条对话作为背景上下文）。但用户的相邻对话往往主题不同（今天问 Transformer，昨天问 GNN），语义匹配在时间跨度小的对话中收益不大。即使需要语义回忆，也可以对 SQLite 中存储的对话进行 on-the-fly embedding 检索，无需将整个记忆系统迁移。
+
+### 5.3 未来可能的增强方向
+
+如果后续确实需要"回忆与当前话题语义相关的历史对话"，建议采用**混合方案**而非替代方案：
+
+| 方案 | 改动量 | 说明 |
+|------|--------|------|
+| **SQLite + 可选语义回忆** | 小 | 长期记忆仍存 SQLite，仅在需要时对"最近 N 条"做 on-the-fly embedding 匹配 |
+| **SQLite + FTS5 全文索引** | 小 | SQLite 内置的全文搜索引擎，支持模糊关键词回忆，无外部依赖 |
+| **混合：SQLite + Chroma 双写** | 中 | SQLite 负责精确查询（主路径），Chroma 负责"跟我之前聊过的那个话题有关"的模糊回忆（辅助路径） |
+
+**核心结论**：ChromaDB 在 PaperAgent 中的正确职责是论文语义检索（`paper_summaries` collection），而非对话记忆存储。长期记忆的增删改查负载是典型的 OLTP 场景，SQLite 是匹配这一模式的正确选择。
+
+---
+
+## 六、相关文件索引
 
 | 文件 | 职责 |
 |------|------|

@@ -40,7 +40,7 @@ PaperAgent 自身的前端对话功能也通过 SSE 模式接入同一 MCP Serve
 ### 关键设计
 
 - **不经过 FastAPI**：MCP Server 直接访问数据层（SQLite + Chroma + LLM），与 REST API 共享同一套代码但不经过 HTTP 层
-- **双传输模式**：stdio 用于本地 IDE 集成，SSE 用于远程接入
+- **stdio / SSE 双传输模式**：同一套 Tools/Resources/Prompts 代码，通过命令行参数切换传输协议，无需任何代码修改
 - **装饰器注册**：Tools / Resources / Prompts 通过 `@mcp.tool()` 等装饰器声明式注册
 
 ### 代码结构
@@ -61,14 +61,28 @@ backend/app/mcp/
 ### 启动流程
 
 ```
-python -m app.mcp.server
-  └─► __main__.py
-        ├─► 1. 强制 UTF-8 编码（Windows 兼容）
-        ├─► 2. 禁用 chromadb posthog 遥测（防止旧版 crash）
-        └─► 3. 调用 server.main()
-              ├─► 创建/复用 FastMCP 实例（模块级 mcp）
-              ├─► import tools / resources / prompts → 装饰器注册
-              └─► mcp.run(transport="stdio" | "sse")
+用户启动命令
+  │
+  ├── stdio 模式: python -m app.mcp.server
+  └── SSE  模式: python -m app.mcp.server --transport sse --port 8002
+  │
+  ▼
+__main__.py（入口包装）
+  ├─► 1. 强制 sys.stdout/stderr UTF-8 编码（Windows 兼容）
+  ├─► 2. Monkey-patch 禁用 chromadb posthog 遥测
+  └─► 3. 调用 server.main()
+        │
+        ├─► 解析 --transport 参数（stdio / sse）
+        │
+        ├─► stdio 模式: 使用模块级 mcp 实例（已通过装饰器注册）
+        └─► SSE  模式: 重建 mcp = FastMCP(host="0.0.0.0", port=8002)
+        │
+        ├─► import tools / resources / prompts → 装饰器注册到 mcp 实例
+        │
+        └─► mcp.run(transport="stdio" | "sse")
+              │
+              ├─ stdio: 监听 stdin/stdout，等待 JSON-RPC 消息
+              └─ SSE:  启动 HTTP 服务器，监听 /sse 端点
 ```
 
 > **Windows 兼容性**：`__main__.py` 中强制 `sys.stdout/stderr.reconfigure(encoding="utf-8")`，确保 JSON-RPC 协议的 UTF-8 要求在中文字符环境下不被破坏。同时禁用 chromadb 的 posthog 遥测以避免新版 posthog SDK 的 API 不兼容。
@@ -446,21 +460,117 @@ def search_papers(query: str, top_k: int = 6, ...) -> str:
 
 装饰器在 `import` 时自动将函数注册到 `mcp` 实例的工具列表中，无需手动注册。
 
-### 双传输模式
+### 双传输模式详解
 
-```python
-# server.py main()
-if args.transport == "sse":
-    mcp = FastMCP("paperagent-memory", host="0.0.0.0", port=args.port)
-    mcp.run(transport="sse")
-else:
-    # 使用模块级 stdio 实例（已通过装饰器注册 tools/resources/prompts）
-    mcp.run(transport="stdio")
+PaperAgent MCP Server 完整支持 **stdio** 和 **SSE** 两种传输协议，共用一个代码入口，通过命令行参数切换：
+
+```bash
+# stdio 模式（默认）
+python -m app.mcp.server
+
+# SSE 模式
+python -m app.mcp.server --transport sse --port 8002
 ```
 
-两种模式的关键区别：
-- **stdio**：Claude Code / Desktop 直接 spawn 进程，通过 stdin/stdout JSON-RPC 通信
-- **SSE**：HTTP Server-Sent Events，支持远程连接和浏览器客户端
+#### stdio 模式
+
+**工作原理**：MCP 客户端（Claude Code / Claude Desktop）通过 `subprocess` 启动 Python 进程，通过该进程的 **stdin / stdout** 管道进行 JSON-RPC 2.0 双向通信。
+
+```
+┌──────────────┐    spawn subprocess    ┌──────────────────┐
+│ MCP Client   │ ◄──────────────────► │ Python Process    │
+│ (Claude Code)│   stdin / stdout       │ (app.mcp.server) │
+└──────────────┘   JSON-RPC 2.0         └──────────────────┘
+```
+
+**特点**：
+- 进程生命周期与客户端绑定（客户端启动 → spawn 进程，客户端退出 → kill 进程）
+- 零网络开销，通信完全在本地进行
+- 每个客户端拥有独立的 MCP Server 进程实例
+- 不需要端口配置，无防火墙/NAT 问题
+
+**配置示例**（`.mcp.json` 或 `claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "paperagent": {
+      "command": "python",
+      "args": ["-m", "app.mcp.server"],
+      "cwd": "backend"
+    }
+  }
+}
+```
+
+**客户端无需额外操作**：Claude Code / Desktop 自动根据配置启动和管理进程，用户只需在对话中直接使用 MCP 工具。
+
+#### SSE 模式
+
+**工作原理**：MCP Server 启动一个 HTTP 服务器，通过 **Server-Sent Events (SSE)** 端点进行通信。客户端通过 HTTP POST 发送 JSON-RPC 请求，通过 SSE 长连接接收响应和通知。
+
+```
+┌──────────────┐    HTTP POST /sse     ┌──────────────────────┐
+│ MCP Client   │ ◄──────────────────► │ HTTP Server          │
+│ (远程/前端)   │    SSE Event Stream   │ (0.0.0.0:8002)       │
+└──────────────┘                       └──────────────────────┘
+```
+
+**特点**：
+- 支持远程连接（跨网络、跨机器）
+- 支持多个客户端同时连接
+- 需要指定监听端口（默认 8002）
+- PaperAgent 前端通过此模式接入，实现工具调用能力共享
+- 服务进程独立运行，不与客户端生命周期绑定
+
+**启动命令**：
+
+```bash
+python -m app.mcp.server --transport sse --port 8002
+```
+
+#### 两种模式的关键区别
+
+| 维度 | stdio | SSE |
+|------|-------|-----|
+| 通信方式 | stdin/stdout 管道 | HTTP + Server-Sent Events |
+| 连接范围 | 仅本地进程 | 本地 + 远程网络 |
+| 多客户端 | 不支持（单进程单连接） | 支持（HTTP 服务器多连接） |
+| 端口占用 | 无 | 需要指定端口 |
+| 进程管理 | 客户端 spawn/kill | 用户手动启停 |
+| 适用场景 | Claude Code/Desktop 本地集成 | 远程接入、前端自消费、Docker 部署 |
+| 网络依赖 | 无 | 需要网络可达 |
+
+#### 实现细节
+
+**代码位置**: `backend/app/mcp/server/server.py:24-56`
+
+```python
+# 模块级实例 — stdio 模式使用（装饰器在 import 时注册到此实例）
+mcp = FastMCP("paperagent-memory")
+
+def main():
+    global mcp
+    args = parser.parse_args()
+
+    # SSE 模式：重建实例（需要绑定 host/port）
+    if args.transport == "sse":
+        mcp = FastMCP("paperagent-memory", host="0.0.0.0", port=args.port)
+
+    # import 触发装饰器注册 — 注册到当前 mcp 实例（stdio 或 SSE）
+    from app.mcp.server import tools, resources, prompts
+
+    # 启动对应的传输协议
+    if args.transport == "sse":
+        mcp.run(transport="sse")   # 启动 HTTP 服务器
+    else:
+        mcp.run(transport="stdio") # 监听 stdin/stdout
+```
+
+**关键设计点**：
+1. **装饰器注册时机**：`import tools/resources/prompts` 必须在 `mcp` 实例确定之后执行。stdio 模式使用模块级 `mcp`，SSE 模式先 `global mcp` 覆盖后再 import，确保装饰器始终注册到正确的实例
+2. **Windows UTF-8 兼容**：`run_mcp_server.py` 包装脚本在调用 `main()` 前强制 `sys.stdout/stderr.reconfigure(encoding="utf-8")`，确保 JSON-RPC 协议不因中文系统编码（cp936）而乱码
+3. **chromadb 遥测屏蔽**：monkey-patch posthog 防止 chromadb 内置遥测在新版 posthog SDK 下崩溃
 
 ---
 
