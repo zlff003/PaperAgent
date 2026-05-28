@@ -4,9 +4,11 @@ import json
 from typing import Any
 
 from app.agents.paper_retrieval import paper_retrieval_agent
-from app.agents.research_qa import research_qa_agent
+from app.core.langchain_factory import get_chat_model
 from app.db.sqlite import db
 from app.mcp.server.server import mcp
+
+_chat = get_chat_model()
 
 
 def _format_paper_brief(p: dict[str, Any]) -> str:
@@ -135,16 +137,43 @@ def ask_paper_qa(question: str, top_k: int = 6) -> str:
     The system retrieves the most relevant papers, feeds their structured summaries
     to an LLM, and returns an answer with paper citations.
     Supports cross-paper comparison and literature review questions."""
-    response = research_qa_agent.answer(question, top_k=top_k)
-    lines = [response.answer, ""]
-    if response.cited_papers:
-        lines.append("---")
-        lines.append("**Cited papers:**")
-        for p in response.cited_papers:
+    import asyncio
+
+    async def _run():
+        papers = await paper_retrieval_agent.search_async(query=question, top_k=top_k)
+        if not papers:
+            return "No relevant papers found to answer this question."
+
+        context_parts = []
+        cited = []
+        for i, p in enumerate(papers, 1):
             authors = ", ".join(p.authors[:3]) if p.authors else "Unknown"
             year = f" ({p.year})" if p.year else ""
-            lines.append(f"- [{p.title}](paper://{p.id}) — {authors}{year}")
-    return "\n".join(lines)
+            snippet = (p.snippet or "")[:400]
+            context_parts.append(f"[{i}] {p.title} — {authors}{year}\n{snippet}")
+            cited.append({"title": p.title, "authors": p.authors[:3], "year": p.year, "id": p.id})
+
+        context = "\n\n".join(context_parts)
+        prompt = (
+            "You are a research assistant. Answer the question based on the provided paper context.\n"
+            "Cite paper sources inline as [n]. If info is insufficient, say so clearly.\n\n"
+            f"Question: {question}\n\nPaper library context:\n{context}"
+        )
+
+        response = await _chat.ainvoke(prompt)
+        answer = response.content if hasattr(response, "content") else str(response)
+
+        lines = [answer, ""]
+        if cited:
+            lines.append("---")
+            lines.append("**Cited papers:**")
+            for i, p in enumerate(cited, 1):
+                authors = ", ".join(p["authors"]) if p["authors"] else "Unknown"
+                year = f" ({p['year']})" if p["year"] else ""
+                lines.append(f"[{i}] {p['title']} — {authors}{year}")
+        return "\n".join(lines)
+
+    return asyncio.run(_run())
 
 
 @mcp.tool()

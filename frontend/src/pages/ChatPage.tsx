@@ -16,43 +16,56 @@ export function ChatPage() {
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<Conversation[]>([]);
   const [busy, setBusy] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  function dedupHistory(items: Conversation[]): Conversation[] {
+    // Show one entry per session (the first turn), plus legacy items without session_id
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      if (item.session_id) {
+        if (seen.has(item.session_id)) return false;
+        seen.add(item.session_id);
+      }
+      return true;
+    });
+  }
 
   useEffect(() => {
-    void api.history().then(setHistory);
+    void api.history().then((items) => setHistory(dedupHistory(items)));
   }, []);
 
   async function refreshHistory() {
-    setHistory(await api.history());
+    setHistory(dedupHistory(await api.history()));
   }
 
   function newConversation() {
     setMessages([]);
     setQuestion("");
-    // keep server-side history untouched; focus input
+    setSessionId(crypto.randomUUID());
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
-  async function deleteConversation(id: string) {
+  async function deleteConversation(item: Conversation) {
     try {
-      await api.deleteConversation(id);
-      // if currently showing that conversation, clear messages
-      setMessages((cur) => {
-        if (cur.length === 2 && cur[0].content && cur[1].content) {
-          // best-effort: if the first message matches deleted id's question, we can't know id here
-          // simply clear selection to avoid stale display
-          return [];
-        }
-        return cur;
-      });
+      if (item.session_id) {
+        await api.deleteSession(item.session_id);
+      } else {
+        await api.deleteConversation(item.id);
+      }
+      // Clear messages if currently viewing the deleted session
+      if (sessionId === item.session_id || (!item.session_id && !sessionId)) {
+        setMessages([]);
+        setSessionId(null);
+      }
       await refreshHistory();
     } catch (err) {
-      // ignore for now
       console.error("删除会话失败", err);
     }
   }
 
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const isStreamingAnalysis = useRef(false);
 
   useEffect(() => {
     const el = messageListRef.current;
@@ -69,22 +82,22 @@ export function ChatPage() {
     const trimmed = question.trim();
     if (!trimmed) return;
     setQuestion("");
+    isStreamingAnalysis.current = false;
     setMessages((items) => [...items, { role: "user", content: trimmed }]);
     setBusy(true);
     // optimistic add assistant placeholder
     setMessages((items) => [...items, { role: "assistant", content: "" }]);
     try {
-      const resp = await api.askStream(trimmed);
+      const sid = sessionId || crypto.randomUUID();
+      if (!sessionId) setSessionId(sid);
+      const resp = await api.chat(trimmed, sid);
       if (!resp || !resp.body) {
-        // fallback to non-stream
-        const full = await api.ask(trimmed);
         setMessages((items) => {
-          // replace last assistant message
           const copy = [...items];
-          copy[copy.length - 1] = { role: "assistant", content: full.answer, cited_papers: full.cited_papers };
+          copy[copy.length - 1] = { role: "assistant", content: "[错误] 无法连接到聊天服务" };
           return copy;
         });
-        setHistory(await api.history());
+        setBusy(false);
         return;
       }
 
@@ -109,55 +122,65 @@ export function ChatPage() {
             }
             data = data.replace(/\n$/, "");
             if (ev === "token") {
-              // append token to last assistant message
               setMessages((items) => {
                 const copy = [...items];
-                const last = copy[copy.length - 1];
-                copy[copy.length - 1] = { ...last, content: (last.content || "") + data };
+                if (isStreamingAnalysis.current) {
+                  // Append to the existing streaming message
+                  const last = copy[copy.length - 1];
+                  copy[copy.length - 1] = { ...last, content: (last.content || "") + data };
+                } else {
+                  // First token — push a new message bubble
+                  isStreamingAnalysis.current = true;
+                  copy.push({ role: "assistant", content: data });
+                }
                 return copy;
               });
             } else if (ev === "node_done") {
               try {
                 const obj = JSON.parse(data);
-                const nodeName = obj.node;
-                const output = obj.data || {};
-                // If the graph saved/finished the formatted answer, attach it to the message
-                if (output && (output.final_answer || output.answer || nodeName === "format_save")) {
-                  const finalText = output.final_answer || output.answer || "";
-                  const cited = output.cited_papers || output.cited || [];
+                const cited = obj.cited_papers || obj.data?.cited_papers || [];
+                if (cited.length > 0) {
                   setMessages((items) => {
                     const copy = [...items];
                     const last = copy[copy.length - 1] || { role: "assistant", content: "" };
                     copy[copy.length - 1] = {
                       ...last,
-                      content: finalText || last.content,
-                      cited_papers: cited.length ? cited : last.cited_papers,
+                      cited_papers: cited,
                     };
                     return copy;
                   });
-                  // refresh history to ensure saved conversation appears in history panel
-                  void api.history().then(setHistory).catch(() => {});
                 }
+                // Refresh history
+                void api.history().then((items) => setHistory(dedupHistory(items))).catch(() => {});
               } catch (e) {
                 // ignore parse errors
               }
+            } else if (ev === "done") {
+              isStreamingAnalysis.current = false;
+              // Remove trailing empty assistant placeholder if any
+              setMessages((items) => {
+                const copy = [...items];
+                const last = copy[copy.length - 1];
+                if (last && last.role === "assistant" && !last.content && !last.cited_papers?.length) {
+                  copy.pop();
+                }
+                return copy;
+              });
+              // Fetch latest history
+              const h = await api.history();
+              setHistory(dedupHistory(h));
             } else if (ev === "error") {
               setMessages((items) => {
                 const copy = [...items];
                 copy[copy.length - 1] = { ...copy[copy.length - 1], content: (copy[copy.length - 1].content || "") + "\n[错误] " + data };
                 return copy;
               });
-            } else if (ev === "done") {
-              // finalize: fetch history and cited papers from server
-              const h = await api.history();
-              setHistory(h);
             }
           }
         }
       }
     } catch (err) {
       console.error("stream error", err);
-      // fallback: show error in assistant message
       setMessages((items) => {
         const copy = [...items];
         copy[copy.length - 1] = { ...copy[copy.length - 1], content: "[流式错误] " + String(err) };
@@ -173,14 +196,9 @@ export function ChatPage() {
       <aside className="history-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <h2>历史记录</h2>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="icon-button" type="button" onClick={refreshHistory} title="刷新">
-              <ExternalLink size={14} />
-            </button>
-            <button className="icon-button primary" type="button" onClick={newConversation} title="新建对话">
-              <Plus size={14} />
-            </button>
-          </div>
+          <button className="icon-button primary" type="button" onClick={newConversation} title="新建对话">
+            <Plus size={14} />
+          </button>
         </div>
         {history.length === 0 && <div className="empty-state compact">暂无历史对话</div>}
         {history.map((item) => (
@@ -188,16 +206,38 @@ export function ChatPage() {
             <button
               className="history-item"
               type="button"
-              onClick={() =>
-                setMessages([
-                  { role: "user", content: item.question },
-                  { role: "assistant", content: item.answer, cited_papers: item.cited_papers },
-                ])
-              }
+              onClick={async () => {
+                if (item.session_id) {
+                  // Restore the full session so follow-ups continue the same conversation
+                  setSessionId(item.session_id);
+                  try {
+                    const turns = await api.sessionHistory(item.session_id);
+                    const msgs: Message[] = [];
+                    for (const turn of turns) {
+                      msgs.push({ role: "user", content: turn.question });
+                      msgs.push({ role: "assistant", content: turn.answer, cited_papers: turn.cited_papers });
+                    }
+                    setMessages(msgs);
+                  } catch {
+                    // Fallback: show just this turn
+                    setMessages([
+                      { role: "user", content: item.question },
+                      { role: "assistant", content: item.answer, cited_papers: item.cited_papers },
+                    ]);
+                  }
+                } else {
+                  // Legacy conversation without session_id
+                  setSessionId(null);
+                  setMessages([
+                    { role: "user", content: item.question },
+                    { role: "assistant", content: item.answer, cited_papers: item.cited_papers },
+                  ]);
+                }
+              }}
             >
               {item.question}
             </button>
-            <button className="icon-button danger" type="button" title="删除" onClick={() => deleteConversation(item.id)}>
+            <button className="icon-button danger" type="button" title="删除" onClick={() => deleteConversation(item)}>
               <Trash2 size={14} />
             </button>
           </div>
@@ -210,9 +250,15 @@ export function ChatPage() {
               向论文库提问，AI 会基于所有论文的结构化信息回答，支持跨论文对比和综述。
             </div>
           )}
-          {messages.map((message, index) => (
+          {messages.map((message, index) => {
+            const isStreamingMsg = busy && index === messages.length - 1 && message.role === "assistant";
+            return (
             <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
-              <div className="md-content"><ReactMarkdown>{message.content}</ReactMarkdown></div>
+              {isStreamingMsg ? (
+                <pre className="streaming-content">{message.content}</pre>
+              ) : (
+                <div className="md-content"><ReactMarkdown>{message.content}</ReactMarkdown></div>
+              )}
               {message.cited_papers && message.cited_papers.length > 0 && (
                 <div className="citation-list">
                   {message.cited_papers.map((paper, ci) => (
@@ -228,7 +274,8 @@ export function ChatPage() {
                 </div>
               )}
             </article>
-          ))}
+          );
+          })}
           {busy && messages[messages.length - 1]?.role === "assistant" && !messages[messages.length - 1]?.content && (
             <div className="message assistant">思考中...</div>
           )}

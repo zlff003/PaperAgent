@@ -67,6 +67,8 @@ export type Conversation = {
   question: string;
   answer: string;
   cited_papers: PaperBrief[];
+  session_id?: string | null;
+  turn_index?: number;
   created_at: string;
 };
 

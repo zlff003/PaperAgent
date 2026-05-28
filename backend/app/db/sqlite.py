@@ -73,6 +73,8 @@ class SQLiteStore:
                     question TEXT NOT NULL,
                     answer TEXT NOT NULL,
                     cited_papers TEXT,
+                    session_id TEXT,
+                    turn_index INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -117,7 +119,15 @@ class SQLiteStore:
         self._ensure_columns(
             conn,
             "conversations",
-            {"cited_papers": "TEXT"},
+            {
+                "cited_papers": "TEXT",
+                "session_id": "TEXT",
+                "turn_index": "INTEGER",
+            },
+        )
+        # Ensure index exists (CREATE INDEX IF NOT EXISTS is safe)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_session ON conversations(session_id)"
         )
 
     @staticmethod
@@ -419,14 +429,16 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO conversations (id, question, answer, cited_papers)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO conversations (id, question, answer, cited_papers, session_id, turn_index)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["id"],
                     item["question"],
                     item["answer"],
                     json.dumps(item.get("cited_papers", []), ensure_ascii=False),
+                    item.get("session_id"),
+                    item.get("turn_index", 0),
                 ),
             )
         return self.get_conversation(item["id"])
@@ -445,10 +457,49 @@ class SQLiteStore:
             ).fetchone()
         return self._conversation(row) if row else None
 
+    def list_conversations_by_session(
+        self, session_id: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Return all turns for a session, ordered by turn_index."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM conversations
+                WHERE session_id = ?
+                ORDER BY turn_index ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [self._conversation(row) for row in rows]
+
+    def get_last_conversations(
+        self, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Return the most recent conversations across all sessions."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM conversations
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._conversation(row) for row in rows]
+
     def delete_conversation(self, conversation_id: str) -> bool:
         with self.connect() as conn:
             cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             return cursor.rowcount > 0
+
+    def delete_conversations_by_session(self, session_id: str) -> int:
+        """Delete ALL conversation turns in a session. Returns count of deleted rows."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM conversations WHERE session_id = ?", (session_id,)
+            )
+            return cursor.rowcount
 
     # ── Reset ───────────────────────────────────────────────────
 
@@ -483,6 +534,9 @@ class SQLiteStore:
     def _conversation(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["cited_papers"] = json.loads(item.get("cited_papers") or "[]")
+        # Coerce NULLs from legacy rows to defaults
+        item["turn_index"] = item.get("turn_index") or 0
+        item["session_id"] = item.get("session_id") or None
         return item
 
 

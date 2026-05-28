@@ -1,4 +1,4 @@
-import type { Conversation, Paper, PaperBrief, PaperUpdate, ParseStatus, QAResponse, SearchQuery, Tag } from "../types";
+import type { Conversation, Paper, PaperBrief, PaperUpdate, ParseStatus, SearchQuery, Tag } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
@@ -73,17 +73,18 @@ export const api = {
   deleteTag: (id: string) =>
     request<{ status: string }>(`/tags/${id}`, { method: "DELETE" }),
 
-  // QA
-  ask: (question: string, top_k = 6) =>
-    request<QAResponse>("/qa/ask", { method: "POST", body: JSON.stringify({ question, top_k }) }),
+  // Chat history
+  history: () => request<Conversation[]>("/chat/history"),
+  sessionHistory: (sessionId: string) => request<Conversation[]>(`/chat/history?session_id=${encodeURIComponent(sessionId)}`),
+  deleteConversation: (id: string) => request<{ status: string }>(`/chat/history/${id}`, { method: "DELETE" }),
+  deleteSession: (sessionId: string) => request<{ status: string; count: number }>(`/chat/history/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
 
-  history: () => request<Conversation[]>("/qa/history"),
-  deleteConversation: (id: string) => request<{ status: string }>(`/qa/history/${id}`, { method: "DELETE" }),
-  askStream: (question: string, top_k = 6) =>
-    fetch(`${API_BASE}/qa/ask/stream`, {
+  // Chat (Supervisor mode)
+  chat: (message: string, sessionId?: string) =>
+    fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k }),
+      body: JSON.stringify({ message, session_id: sessionId }),
     }),
 
   // System

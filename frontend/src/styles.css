@@ -654,6 +654,15 @@ h3 { font-size: 15px; }
   font-size: 14px;
 }
 
+.streaming-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.6;
+}
+
 .md-content h1,
 .md-content h2,
 .md-content h3,

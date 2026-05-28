@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import papers, qa, search, system, tags
+from app.api import chat, papers, search, system, tags
 from app.core.config import settings
 from app.core.task_queue import parse_queue
 
@@ -37,7 +37,7 @@ app.include_router(system.router, prefix=settings.api_prefix)
 app.include_router(papers.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(tags.router, prefix=settings.api_prefix)
-app.include_router(qa.router, prefix=settings.api_prefix)
+app.include_router(chat.router, prefix=settings.api_prefix)
 
 
 @app.get("/")
