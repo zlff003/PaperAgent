@@ -13,3 +13,4 @@ data/chroma/*
 !data/papers/.gitkeep
 !data/chroma/.gitkeep
 
+.claude

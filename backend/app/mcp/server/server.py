@@ -15,15 +15,14 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("paperagent-memory")
 
-# Import sibling modules to register tools/resources/prompts on the mcp instance
-from app.mcp.server import tools  # noqa: E402, F401
-from app.mcp.server import resources  # noqa: E402, F401
-from app.mcp.server import prompts  # noqa: E402, F401
+# Module-level MCP instance so tools/resources/prompts can import it for decorator registration.
+# Re-created in main() for SSE mode (which needs host/port in constructor).
+mcp = FastMCP("paperagent-memory")
 
 
 def main() -> None:
+    global mcp
     import argparse
 
     parser = argparse.ArgumentParser(description="PaperAgent MCP Server")
@@ -41,8 +40,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # SSE mode needs host/port in the FastMCP constructor
     if args.transport == "sse":
-        mcp.run(transport="sse", port=args.port)
+        mcp = FastMCP("paperagent-memory", host="0.0.0.0", port=args.port)
+
+    # Import sibling modules to register tools/resources/prompts on the mcp instance
+    from app.mcp.server import tools  # noqa: E402, F401
+    from app.mcp.server import resources  # noqa: E402, F401
+    from app.mcp.server import prompts  # noqa: E402, F401
+
+    if args.transport == "sse":
+        mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
 

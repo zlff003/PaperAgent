@@ -6,7 +6,15 @@
       "Bash(PYTHONPATH=\".\" python -c \"from app.mcp.server.server import mcp; print\\('Server:', mcp.name\\); print\\('Tools:', [t.name for t in mcp._tool_manager.list_tools\\(\\) if hasattr\\(mcp, '_tool_manager'\\)]\\)\")",
       "Bash(python -c ':*)",
       "Bash(pip list:*)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(\"C:/ProgramData/anaconda3/python.exe\" -c \"from app.mcp.server.server import mcp, main; print\\('mcp:', mcp\\); print\\('main:', main\\); print\\('SUCCESS'\\)\")",
+      "Bash(timeout 2 \"C:/ProgramData/anaconda3/python.exe\" run_mcp_server.py)",
+      "Bash(find \"D:/Projects/Agent/PaperAgent/backend\" -type d -name \"__pycache__\" -exec rm -rf {} +)",
+      "Bash(\"C:/ProgramData/anaconda3/python.exe\" run_mcp_server.py)",
+      "Bash(C:/ProgramData/anaconda3/python.exe -c ':*)",
+      "Bash(python3 -c \"import json; f=open\\('D:/Projects/Agent/PaperAgent/.mcp.json'\\); d=json.load\\(f\\); print\\(json.dumps\\(d, indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(\"C:/ProgramData/anaconda3/python.exe\" -c \"import json; f=open\\('D:/Projects/Agent/PaperAgent/.mcp.json'\\); d=json.load\\(f\\); print\\(json.dumps\\(d, indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 \"C:/ProgramData/anaconda3/python.exe\" -m app.mcp.server)"
     ]
   }
 }

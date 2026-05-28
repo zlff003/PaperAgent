@@ -2,10 +2,9 @@
   "mcpServers": {
     "paperagent": {
       "command": "C:\\ProgramData\\anaconda3\\python.exe",
-      "args": ["run_mcp_server.py"],
-      "cwd": "${projectDir}/backend",
+      "args": ["-m", "app.mcp.server"],
+      "cwd": "backend",
       "env": {
-        "PYTHONPATH": ".",
         "PYTHONIOENCODING": "utf-8"
       }
     }
